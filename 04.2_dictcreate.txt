@@ -1,0 +1,8 @@
+#copy paste the below two lines in bash and run it if incase picard tool fails!
+
+ samtools dict /mnt/d/vibhav/pyjo/03_mapping/GCA_013400435.1_ASM1340043v1_genomic.fna \
+    > /mnt/d/vibhav/pyjo/03_mapping/GCA_013400435.1_ASM1340043v1_genomic.dict
+
+ samtools dict /mnt/d/vibhav/pyjo/03_mapping/GCA_013400435.1_ASM1340043v1_genomic.fna \
+    > /mnt/d/vibhav/pyjo/03_mapping/GCA_013400435.1_ASM1340043v1_genomic.dict
+
