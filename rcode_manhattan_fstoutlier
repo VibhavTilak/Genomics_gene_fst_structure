@@ -195,6 +195,7 @@ ggsave(file.path(OUTDIR, "gene_fst_violin_comparison.png"),
 # Y-axis : per-gene FST (Bhatia's correction)
 # Colours: alternating light/dark per scaffold (classic Manhattan style)
 # Red    : top 1% FST genes — labelled with gene name via ggrepel
+
 make_manhattan <- function(pair_name, all_fst, dot_colour, outdir) {
   
   cat("\nManhattan:", pair_name, "\n")
@@ -229,31 +230,24 @@ make_manhattan <- function(pair_name, all_fst, dot_colour, outdir) {
       scaf_idx = as.integer(factor(chr, levels = scaffold_order))
     )
   
-  # Top 1% FST threshold
-  fst_threshold <- quantile(df$fst_gene, 0.99, na.rm = TRUE)
-  cat("  Top 1% threshold: FST =", round(fst_threshold, 4), "\n")
-  cat("  Outlier genes:   ", sum(df$fst_gene >= fst_threshold), "\n")
+  # Two thresholds — 95th and 99th percentile
+  fst_95 <- quantile(df$fst_gene, 0.95, na.rm = TRUE)
+  fst_99 <- quantile(df$fst_gene, 0.99, na.rm = TRUE)
+  global_fst <- round(mean(df$fst_gene, na.rm = TRUE), 4)
+  
+  cat("  95th percentile: FST =", round(fst_95, 4), "\n")
+  cat("  99th percentile: FST =", round(fst_99, 4), "\n")
+  cat("  Global mean FST: ", global_fst, "\n")
+  cat("  Genes above 99th:", sum(df$fst_gene >= fst_99), "\n")
   
   df <- df %>%
     mutate(
-      is_outlier = fst_gene >= fst_threshold,
+      is_outlier = fst_gene >= fst_99,
       label      = ifelse(is_outlier, gene, NA_character_)
     )
   
-  # Alternating scaffold colours — scaffolds with <10 genes all grey
-  major_scafs <- df %>% count(chr) %>% filter(n >= 10) %>% pull(chr)
-  col_a <- dot_colour
-  col_b <- colorspace::lighten(dot_colour, 0.45)
-  
-  df <- df %>%
-    mutate(dot_col = case_when(
-      is_outlier              ~ "#C1121F",   # outliers always red
-      !(chr %in% major_scafs) ~ "grey78",    # tiny scaffolds grey
-      scaf_idx %% 2 == 0      ~ col_a,       # alternating colour A
-      TRUE                    ~ col_b        # alternating colour B
-    ))
-  
   # X-axis ticks — midpoint of each major scaffold, trimmed label
+  major_scafs <- df %>% count(chr) %>% filter(n >= 10) %>% pull(chr)
   scaf_ticks <- df %>%
     filter(chr %in% major_scafs) %>%
     group_by(chr) %>%
@@ -264,70 +258,74 @@ make_manhattan <- function(pair_name, all_fst, dot_colour, outdir) {
   
   p <- ggplot(df, aes(x = x_pos, y = fst_gene)) +
     
-    # Threshold dashed line
-    geom_hline(yintercept = fst_threshold,
+    # 95th percentile — light dashed red
+    geom_hline(yintercept = fst_95,
                linetype   = "dashed",
-               colour     = "grey45",
-               linewidth  = 0.45) +
+               colour     = "#E63946",
+               linewidth  = 0.55,
+               alpha      = 0.7) +
     
-    # All non-outlier dots
-    geom_point(data  = df %>% filter(!is_outlier),
-               aes(colour = dot_col),
-               size  = 1.0,
-               alpha = 0.75) +
+    # 99th percentile — solid darker red
+    geom_hline(yintercept = fst_99,
+               linetype   = "solid",
+               colour     = "#9B1B1B",
+               linewidth  = 0.6,
+               alpha      = 0.85) +
     
-    # Outlier dots on top — larger, fully opaque
-    geom_point(data   = df %>% filter(is_outlier),
-               colour = "#C1121F",
-               size   = 2.2,
-               alpha  = 1.0) +
+    # All dots — single blue colour, uniform
+    geom_point(colour = dot_colour,
+               size   = 1.0,
+               alpha  = 0.65) +
     
-    # Gene labels for top 1% — non-overlapping
+    # Gene labels for top 1% — non-overlapping, black text
     ggrepel::geom_text_repel(
       aes(label = label),
       na.rm              = TRUE,
-      size               = 2.6,
-      colour             = "#9B1B1B",
-      fontface           = "italic",
-      box.padding        = 0.45,
-      point.padding      = 0.3,
-      segment.colour     = "grey55",
-      segment.size       = 0.3,
-      segment.alpha      = 0.7,
-      max.overlaps       = 40,
-      min.segment.length = 0.15,
-      direction          = "both"
+      size               = 2.4,
+      colour             = "black",
+      fontface           = "plain",
+      box.padding        = 0.3,
+      point.padding      = 0.25,
+      segment.colour     = "grey50",
+      segment.size       = 0.25,
+      segment.alpha      = 0.6,
+      max.overlaps       = 50,
+      min.segment.length = 0.1,
+      direction          = "both",
+      nudge_y            = 0.03
     ) +
-    
-    # Threshold label at top-right
-    annotate("text",
-             x      = max(df$x_pos, na.rm = TRUE),
-             y      = fst_threshold + diff(range(df$fst_gene, na.rm = TRUE)) * 0.02,
-             label  = paste0("Top 1%  (FST = ", round(fst_threshold, 3), ")"),
-             hjust  = 1, size = 3.0, colour = "grey40") +
     
     scale_colour_identity() +
     scale_x_continuous(breaks = scaf_ticks$tick_pos,
                        labels = scaf_ticks$label_txt,
                        expand = c(0.01, 0)) +
-    scale_y_continuous(expand = expansion(mult = c(0.02, 0.08))) +
+    scale_y_continuous(expand = expansion(mult = c(0.02, 0.10)),
+                       breaks = c(0, 0.25, 0.50, 0.75, 1.0)) +
     
-    labs(x       = "Scaffold (ordered by size, largest first)",
-         y       = "Per-gene FST (Bhatia's correction)",
-         title   = paste0("Per-gene FST — ", pair_name),
-         caption = paste0("n = ", nrow(df), " genes (≥5 SNPs)   |   ",
-                          "Red = top 1% FST")) +
+    labs(
+      title    = paste0("Per-gene FST Manhattan plot"),
+      subtitle = paste0("n = ", nrow(df), " genes",
+                        "  |  Global FST = ", global_fst,
+                        "  |  Dashed red = 95th, Darkred = 99th percentile"),
+      x        = "Genomic position (scaffolds)",
+      y        = expression(F[ST])
+    ) +
     
     theme_classic(base_size = 12) +
     theme(
-      plot.title         = element_text(face = "bold", hjust = 0.5, size = 13),
-      axis.title         = element_text(face = "bold"),
-      axis.text.x        = element_text(angle = 45, hjust = 1,
-                                        size = 7, colour = "grey40"),
+      plot.title         = element_text(face = "bold", size = 13, hjust = 0),
+      plot.subtitle      = element_text(size = 9, colour = "grey40", hjust = 0),
+      axis.title         = element_text(face = "bold", size = 11),
+      axis.title.y       = element_text(face = "bold.italic"),
+      axis.text.x        = element_text(angle = 0, hjust = 0.5,
+                                        size = 7, colour = "grey50"),
       axis.text.y        = element_text(size = 10),
-      panel.grid.major.y = element_line(colour = "grey92", linewidth = 0.3),
+      axis.line          = element_line(colour = "grey30", linewidth = 0.4),
+      axis.ticks         = element_line(colour = "grey50"),
+      panel.grid.major.y = element_line(colour = "grey94", linewidth = 0.3),
+      panel.grid.minor   = element_blank(),
       plot.caption       = element_text(colour = "grey55", size = 9),
-      plot.margin        = margin(10, 20, 10, 10)
+      plot.margin        = margin(15, 20, 10, 10)
     )
   
   safe_name <- gsub(" vs ", "_vs_", pair_name) %>% gsub(" ", "_", .)
