@@ -1,21 +1,20 @@
 #!/usr/bin/env Rscript
-# ══════════════════════════════════════════════════════════════════════════════
 # Per-gene FST (Bhatia's correction) + Manhattan plots
 # Populations: hyperythra (7) | albogularis (7) | abuensis (4)
-# ══════════════════════════════════════════════════════════════════════════════
 
-# ─── LIBRARIES ─────────────────────────────────────────────────────────────────
+
+#LIBRARIES
 library(tidyverse)
 library(data.table)
 library(ggrepel)     # non-overlapping gene labels — install.packages("ggrepel")
 library(colorspace)  # lighten() for alternating scaffold colours
 
-# ─── PATHS ─────────────────────────────────────────────────────────────────────
+# PATHS
 GENE_BED <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/02_reference/mixornis_gularis/mixornis_genes.bed"
 FST_DIR  <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/09_pairwise_fst"
 OUTDIR   <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/09_pairwise_fst"
 
-# ─── LOAD GENE BED ─────────────────────────────────────────────────────────────
+# LOADING BED FILES
 genes <- fread(GENE_BED, header = TRUE) %>%
   rename(chr = chr, gene_start = start, gene_end = end, gene = gene) %>%
   filter(!is.na(gene) & gene != "unknown") %>%
@@ -26,24 +25,26 @@ genes <- fread(GENE_BED, header = TRUE) %>%
 
 cat("Genes loaded:", nrow(genes), "\n")
 
-# ─── FST FILES ─────────────────────────────────────────────────────────────────
+# FST FILES LOADING 
 fst_files <- list(
   "hyperythra vs albogularis" = file.path(FST_DIR, "hyper_vs_albo.per_site_fst.txt"),
   "hyperythra vs abuensis"    = file.path(FST_DIR, "hyper_vs_abu.per_site_fst.txt"),
   "albogularis vs abuensis"   = file.path(FST_DIR, "albo_vs_abu.per_site_fst.txt")
 )
 
-# ─── COLOURS ──────────────────────────────────────────────────────────────────
+# SPECIFY COLORS FOR YOUR POPULATION 
 pair_colours <- c(
   "hyperythra vs albogularis" = "#E63946",
   "hyperythra vs abuensis"    = "#2A9D8F",
   "albogularis vs abuensis"   = "#457B9D"
 )
 
-# ─── FUNCTION: COMPUTE PER-GENE FST (BHATIA'S CORRECTION) ─────────────────────
-# Bhatia et al. 2013: FST = sum(alpha) / sum(beta) across sites within a gene
-# This is the RATIO OF AVERAGES — not the average of per-site FST values
+# I WIL, WITH HELP OF CLAUDE DEFINE A FUNCTION TO CALCULATE PER GENE FST ACC. TO BHATIA ET.AL (2013)
+# FST = sum(alpha) / sum(beta) across sites within a gene
+# This is the RATIO OF AVERAGES — not the average of per-site FST values 
 # Per-site FST col3 = alpha (numerator), col4 = beta (denominator)
+#NOTE THAT THE MEAN ALWAYS INTRODUCES BIASES, SO WE DONT TAKE MEAN, WE INSTEAD TAKE THE RATIO OF NUMERATOR SUM AND DENOMINATOR SUM 
+
 compute_gene_fst <- function(fst_file, genes) {
   
   cat("  Loading FST file...\n")
@@ -87,7 +88,7 @@ compute_gene_fst <- function(fst_file, genes) {
   return(result)
 }
 
-# ─── RUN FOR ALL PAIRS ─────────────────────────────────────────────────────────
+# WE DEFINED A FUNCTION EARLIER, NOW WE WILL SIMPLY LOOP THAT UP FOR ALL THE PAIRS OF THE POPULATIONS. 
 all_results <- list()
 
 for (pair_name in names(fst_files)) {
@@ -104,13 +105,13 @@ for (pair_name in names(fst_files)) {
 
 all_fst <- rbindlist(all_results)
 
-# ─── SAVE GENE FST TABLE ───────────────────────────────────────────────────────
+# SAVING! IMPORTANT ... WHATS THE RESULTS IF YOU HAVENT SAVED THEM :)
 fwrite(all_fst,
        file.path(OUTDIR, "per_gene_fst_all_pairs.txt"),
        sep = "\t")
 cat("\nFull table saved to per_gene_fst_all_pairs.txt\n")
 
-# ─── PLOT: HISTOGRAM OF GENE FST PER PAIR ──────────────────────────────────────
+# HISTOGRAM OF FST VS DISTRIBUTIONS
 p_hist <- ggplot(all_fst %>% filter(!is.na(fst_gene)),
                  aes(x = fst_gene, fill = comparison)) +
   geom_histogram(bins = 60, colour = "white", linewidth = 0.2) +
@@ -129,7 +130,7 @@ ggsave(file.path(OUTDIR, "gene_fst_histogram.pdf"),
 ggsave(file.path(OUTDIR, "gene_fst_histogram.png"),
        p_hist, width = 7, height = 9, dpi = 300)
 
-# ─── PLOT: TOP 30 OUTLIER GENES ────────────────────────────────────────────────
+# TOP 30 OUTLIERS TO SEE IF WE HAVE ANY PLUMAGE GENES BEING UNCOVERED
 top_genes <- all_fst %>%
   filter(!is.na(fst_gene), n_sites >= 5) %>%
   group_by(comparison) %>%
@@ -160,7 +161,7 @@ ggsave(file.path(OUTDIR, "gene_fst_top30_outliers.pdf"),
 ggsave(file.path(OUTDIR, "gene_fst_top30_outliers.png"),
        p_top, width = 7, height = 14, dpi = 300)
 
-# ─── PLOT: VIOLIN COMPARISON ───────────────────────────────────────────────────
+# A COMPARISON BETWEEN DIIFERENT POPULATIONS 
 shared_genes <- all_fst %>%
   filter(!is.na(fst_gene), n_sites >= 5) %>%
   group_by(gene) %>%
@@ -189,7 +190,7 @@ ggsave(file.path(OUTDIR, "gene_fst_violin_comparison.pdf"),
 ggsave(file.path(OUTDIR, "gene_fst_violin_comparison.png"),
        p_box, width = 7, height = 5, dpi = 300)
 
-# ─── PLOT: MANHATTAN (one dot per gene, top 1% labelled) ──────────────────────
+# THE MAIN CHUNK, MANHATTAN PLOT WITH TOP 1%TILE GENES LABELLED. 
 # X-axis : scaffolds ordered largest → smallest (approximates chr order)
 # Y-axis : per-gene FST (Bhatia's correction)
 # Colours: alternating light/dark per scaffold (classic Manhattan style)
@@ -344,7 +345,7 @@ make_manhattan <- function(pair_name, all_fst, dot_colour, outdir) {
     mutate(comparison = pair_name)
 }
 
-# ─── RUN MANHATTAN FOR ALL PAIRS ──────────────────────────────────────────────
+# SO WE DEFINED A FUNCTION EARLIER TO PLOT THESE PLOTS... NOW LOOP IT UP FOR ALL THE PAIRS OF THE POPULATIONS
 cat("\n======================================\n")
 cat("Generating Manhattan plots...\n")
 
@@ -377,3 +378,8 @@ cat("  manhattan_hyperythra_vs_albogularis.pdf/png\n")
 cat("  manhattan_hyperythra_vs_abuensis.pdf/png\n")
 cat("  manhattan_albogularis_vs_abuensis.pdf/png\n")
 cat("======================================\n")
+
+
+######################################################################################################################################################
+#we are done 
+######################################################################################################################################################
