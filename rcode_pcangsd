@@ -1,0 +1,99 @@
+# LIBRARIES 
+library(ggplot2)
+library(ggforce)  # for stat_ellipse per group — install.packages("ggforce")
+
+# LOAD COVARIANCE MATRIX 
+cov_mat <- as.matrix(read.table(
+  "/media/birdlab/bird_hdd_13/Vibhav/tawny/08_structure/all_pops_pcangsd.cov"
+))
+
+# PCA 
+pca <- eigen(cov_mat)
+
+# Variance explained per PC
+var_exp <- round((pca$values / sum(pca$values)) * 100, 2)
+
+# SAMPLE METADATA 
+# Order MUST match your bamlist exactly:
+# hyperythra (7) → albogularis (7) → abuensis (4)
+sample_info <- data.frame(
+  individual = paste0("ind", 1:18),
+  population = c(
+    rep("hyperythra",  7),
+    rep("albogularis", 7),
+    rep("abuensis",    4)
+  )
+)
+
+#  BUILD PLOT DATA 
+pca_df <- data.frame(
+  PC1        = pca$vectors[, 1],
+  PC2        = pca$vectors[, 2],
+  individual = sample_info$individual,
+  population = sample_info$population
+)
+
+# COLOURS 
+pop_colours <- c(
+  "hyperythra"  = "#E63946",
+  "albogularis" = "#457B9D",
+  "abuensis"    = "#2A9D8F"
+)
+
+# PLOT 
+p <- ggplot(pca_df, aes(x = PC1, y = PC2, colour = population, fill = population)) +
+
+  # 95% confidence ellipses per population
+  stat_ellipse(
+    geom     = "polygon",
+    alpha    = 0.10,
+    linetype = "dashed",
+    linewidth = 0.6,
+    level    = 0.95
+  ) +
+
+  # Points
+  geom_point(size = 4, alpha = 0.9) +
+
+  # Colours
+  scale_colour_manual(values = pop_colours) +
+  scale_fill_manual(values = pop_colours) +
+
+  # Axis labels with variance explained
+  labs(
+    x      = paste0("PC1 (", var_exp[1], "%)"),
+    y      = paste0("PC2 (", var_exp[2], "%)"),
+    colour = "Population",
+    fill   = "Population",
+    title  = "PCAngsd — all populations (pruned, 5× LC)"
+  ) +
+
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position   = "right",
+    plot.title        = element_text(face = "bold", hjust = 0.5),
+    axis.title        = element_text(face = "bold"),
+    legend.title      = element_text(face = "bold")
+  )
+
+print(p)
+
+# SAVE 
+ggsave(
+  "/media/birdlab/bird_hdd_13/Vibhav/tawny/08_structure/PCA_all_pops.pdf",
+  plot   = p,
+  width  = 7,
+  height = 5,
+  device = "pdf"
+)
+
+ggsave(
+  "/media/birdlab/bird_hdd_13/Vibhav/tawny/08_structure/PCA_all_pops.png",
+  plot  = p,
+  width = 7,
+  height = 5,
+  dpi   = 300
+)
+
+cat("PC1 variance explained:", var_exp[1], "%\n")
+cat("PC2 variance explained:", var_exp[2], "%\n")
