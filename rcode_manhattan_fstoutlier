@@ -1,383 +1,368 @@
 #!/usr/bin/env Rscript
-# Per-gene FST (Bhatia's correction) + Manhattan plots
-# Populations: hyperythra (7) | albogularis (7) | abuensis (4)
 
-
-#LIBRARIES
-library(tidyverse)
 library(data.table)
-library(ggrepel)     # non-overlapping gene labels — install.packages("ggrepel")
-library(colorspace)  # lighten() for alternating scaffold colours
+library(tidyverse)
+library(ggrepel)
+library(ggplot2)
 
+# =========================
 # PATHS
+# =========================
+FST_DIR  <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/pairwise_fst"
 GENE_BED <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/02_reference/mixornis_gularis/mixornis_genes.bed"
-FST_DIR  <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/09_pairwise_fst"
-OUTDIR   <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/09_pairwise_fst"
+OUTDIR   <- "/media/birdlab/bird_hdd_13/Vibhav/tawny/results/manhattan_final"
 
-# LOADING BED FILES
-genes <- fread(GENE_BED, header = TRUE) %>%
-  rename(chr = chr, gene_start = start, gene_end = end, gene = gene) %>%
-  filter(!is.na(gene) & gene != "unknown") %>%
-  # Remove duplicate gene names — keep longest isoform
-  mutate(gene_len = gene_end - gene_start) %>%
-  arrange(desc(gene_len)) %>%
-  distinct(gene, .keep_all = TRUE)
+dir.create(OUTDIR, showWarnings = FALSE, recursive = TRUE)
+
+# =========================
+# CANDIDATE GENE GROUPS
+# Both are "your candidates" — shown in yellow tones, always labelled
+# =========================
+
+plumage_development <- c(
+  "MC1R","TYRP1","MITF","ASIP","MLPH","BCO2","THBS1",
+  "HOXD11","RAB17","SOX5","AOC2","EGR1","CRH","FGF5","ELOVL3",
+  "GOLGA7","GOLGA7B","HTR1A","S1PR4","SP9","WNT1","PMEL",
+  "SLC45A2","NECTIN2","SCUBE2","SCUBE3","SCUBE5"
+)
+
+iris_color <- c(
+  "CRYGN","GUCA1A"
+)
+
+# Combined for labelling logic
+all_candidates <- c(plumage_development, iris_color)
+
+# =========================
+# BACKGROUND FUNCTIONAL CATEGORIES (GO-based)
+# =========================
+
+neural_synapse_genes <- c(
+  "OMP","GRK2","SLC35D3","C1QB","PRLH","CNR2",
+  "KCNH4","SLC6A5","GADD45G","PAQR7","WFIKKN2"
+)
+
+ribosomal_translation_genes <- c(
+  "RPL27","RPL38","RPL21","RPL36A","MRPS23","MRPL57","EIF3K",
+  "SAYSD1","PSTK","MTIF3","SNRPB","SF3B5","ZNHIT3","ILF2",
+  "HNRNPA0","EIF2S1","EIF2B4","RBM8A","POLR2L","MRPL54"
+)
+
+mirna_genes <- c(
+  "MIR425","MIR187","MIRLET7D","MIR218-2","MIR100-2",
+  "MIR2981","MIR2978","MIR2967","MIR2965","MIR1662",
+  "MIR2993","MIR2997"
+)
+
+metabolic_biosynthetic_genes <- c(
+  "PLK2","SYCP1","PRKAG1","C1GALT1C1","EXTL2",
+  "SLC25A5","SLC25A38","SDR42E1","ERN1","FBXO22","NEK2",
+  "NTMT1","TOMM22","CHCHD10","POLD4","KLHDC3",
+  "BSX","EMC6","VPS37C","NDUFB10","UQCRH","ATP5MG",
+  "ATP5PB","HDHD3","GRHPR","DNAJB13","IFT20","SPATA2L"
+)
+
+immune_regulatory_genes <- c(
+  "CTLA4","IL18","DUSP1","MAP1LC3B","BIRC5","IL2RG",
+  "SSC4D","PIERCE1","SORBS3","MED18","ZBTB5","RBP7",
+  "BHLHA9","SPINT4","KRTCAP2","KRTCAP3","ZNF648","B3GNT4",
+  "BNIP2","SCAMP5","RHOG","MEX3D","MUSTN1","ARFIP2",
+  "POU2AF3","CBX4","GCM2","MBD4","SOX18","DLX1","RUNX1"
+)
+
+membrane_transport_genes <- c(
+  "TMEM82","TMEM220","TMEM268","TMEM209",
+  "SLC25A5","SLC25A38","SLC35D3","SLC6A5",
+  "EMC6","LRRC59","PLEKHA2","VPS37C","CLDN23","KCNH4",
+  "MFSD1","LEPROT","OST4","TPBGL","PSMB6","PPIB",
+  "ATP5PB","CENPV","IFT20","DYNLT5","MAP1LC3B"
+)
+
+# =========================
+# ASSIGN FUNCTIONAL GROUP
+# Candidate groups always take priority
+# =========================
+assign_group <- function(gene) {
+  if (gene %in% plumage_development)          return("Plumage development")
+  if (gene %in% iris_color)                   return("Iris coloration")
+  if (gene %in% neural_synapse_genes)         return("Neural & synaptic")
+  if (gene %in% ribosomal_translation_genes)  return("Ribosomal & translation")
+  if (gene %in% mirna_genes)                  return("miRNA")
+  if (gene %in% metabolic_biosynthetic_genes) return("Metabolic & biosynthetic")
+  if (gene %in% immune_regulatory_genes)      return("Immune & regulatory")
+  if (gene %in% membrane_transport_genes)     return("Membrane & transport")
+  if (grepl("^LOC|^RPL|^RPS", gene))          return("Uncharacterized")
+  return("Other")
+}
+
+# =========================
+# COLOUR / SIZE / ALPHA
+# Candidate groups: bold yellow tones, full alpha, large points
+# Background groups: muted colours, partial alpha, smaller points
+# =========================
+group_colours <- c(
+  "Plumage development"        = "#FFD700",   # gold yellow
+  "Iris coloration"            = "#FFA500",   # amber orange
+  "Neural & synaptic"          = "#457B9D",   # blue
+  "Ribosomal & translation"    = "#E63946",   # red
+  "miRNA"                      = "#F4A261",   # soft orange
+  "Metabolic & biosynthetic"   = "#2A9D8F",   # teal
+  "Immune & regulatory"        = "#9B5DE5",   # purple
+  "Membrane & transport"       = "#52B788",   # green
+  "Uncharacterized"            = "#B0B0B0",   # grey
+  "Other"                      = "#D0D0D0"    # light grey
+)
+
+group_alpha <- c(
+  "Plumage development"        = 1.00,
+  "Iris coloration"            = 1.00,
+  "Neural & synaptic"          = 0.80,
+  "Ribosomal & translation"    = 0.75,
+  "miRNA"                      = 0.70,
+  "Metabolic & biosynthetic"   = 0.70,
+  "Immune & regulatory"        = 0.70,
+  "Membrane & transport"       = 0.65,
+  "Uncharacterized"            = 0.40,
+  "Other"                      = 0.35
+)
+
+group_size <- c(
+  "Plumage development"        = 3.5,
+  "Iris coloration"            = 3.5,
+  "Neural & synaptic"          = 2.2,
+  "Ribosomal & translation"    = 2.0,
+  "miRNA"                      = 1.8,
+  "Metabolic & biosynthetic"   = 1.8,
+  "Immune & regulatory"        = 1.8,
+  "Membrane & transport"       = 1.6,
+  "Uncharacterized"            = 1.0,
+  "Other"                      = 1.0
+)
+
+# =========================
+# FST FILES
+# =========================
+fst_files <- list(
+  "hyperythra_vs_albogularis" = file.path(FST_DIR, "hyper_vs_albo.per_site_fst.txt"),
+  "hyperythra_vs_abuensis"    = file.path(FST_DIR, "hyper_vs_abu.per_site_fst.txt"),
+  "albogularis_vs_abuensis"   = file.path(FST_DIR, "albo_vs_abu.per_site_fst.txt")
+)
+
+# =========================
+# LOAD GENE BED
+# =========================
+cat("Loading gene BED...\n")
+genes <- fread(GENE_BED, header = TRUE)
+setnames(genes, c("chr","gene_start","gene_end","gene","strand"))
+genes <- genes[!grepl("^LOC", gene)]
+genes <- genes[!is.na(gene) & gene != ""]
+genes[, group := sapply(gene, assign_group)]
 
 cat("Genes loaded:", nrow(genes), "\n")
+cat("Group breakdown:\n")
+print(table(genes$group))
 
-# FST FILES LOADING 
-fst_files <- list(
-  "hyperythra vs albogularis" = file.path(FST_DIR, "hyper_vs_albo.per_site_fst.txt"),
-  "hyperythra vs abuensis"    = file.path(FST_DIR, "hyper_vs_abu.per_site_fst.txt"),
-  "albogularis vs abuensis"   = file.path(FST_DIR, "albo_vs_abu.per_site_fst.txt")
-)
-
-# SPECIFY COLORS FOR YOUR POPULATION 
-pair_colours <- c(
-  "hyperythra vs albogularis" = "#E63946",
-  "hyperythra vs abuensis"    = "#2A9D8F",
-  "albogularis vs abuensis"   = "#457B9D"
-)
-
-# I WIL, WITH HELP OF CLAUDE DEFINE A FUNCTION TO CALCULATE PER GENE FST ACC. TO BHATIA ET.AL (2013)
-# FST = sum(alpha) / sum(beta) across sites within a gene
-# This is the RATIO OF AVERAGES — not the average of per-site FST values 
-# Per-site FST col3 = alpha (numerator), col4 = beta (denominator)
-#NOTE THAT THE MEAN ALWAYS INTRODUCES BIASES, SO WE DONT TAKE MEAN, WE INSTEAD TAKE THE RATIO OF NUMERATOR SUM AND DENOMINATOR SUM 
-
-compute_gene_fst <- function(fst_file, genes) {
-  
-  cat("  Loading FST file...\n")
+# =========================
+# FUNCTION: READ FST
+# =========================
+read_fst <- function(fst_file) {
+  cat("  Reading FST file...\n")
   fst <- fread(fst_file, header = FALSE,
-               col.names = c("chr", "pos", "alpha", "beta"))
+               col.names = c("chr","pos","alpha","beta"))
   fst <- fst[beta > 0]
-  cat("  FST sites loaded:", nrow(fst), "\n")
-  
-  # foverlaps needs an interval on both tables
-  # Give each FST site a zero-width interval (pos, pos)
   fst[, pos_end := pos]
   setkey(fst, chr, pos, pos_end)
-  
-  # Gene table interval: gene_start → gene_end
-  genes_dt <- as.data.table(genes)
-  setkey(genes_dt, chr, gene_start, gene_end)
-  
-  # Single vectorised range join — finds all FST sites within each gene
-  cat("  Running range join...\n")
-  joined <- foverlaps(fst, genes_dt,
-                      by.x = c("chr", "pos", "pos_end"),
-                      by.y = c("chr", "gene_start", "gene_end"),
-                      type = "within",
-                      nomatch = NULL)   # drop FST sites not in any gene
-  
-  # Sum alpha and beta per gene (Bhatia's correction)
+  return(fst)
+}
+
+# =========================
+# FUNCTION: COMPUTE GENE FST (Bhatia et al. 2013)
+# =========================
+compute_gene_fst <- function(fst_dt, genes_dt) {
+  regions <- copy(genes_dt)
+  setkey(regions, chr, gene_start, gene_end)
+  cat("  Overlapping sites with genes...\n")
+  joined <- foverlaps(fst_dt, regions,
+                      by.x = c("chr","pos","pos_end"),
+                      by.y = c("chr","gene_start","gene_end"),
+                      type = "within", nomatch = NULL)
   result <- joined[, .(
-    n_sites   = .N,
-    sum_alpha = sum(alpha),
-    sum_beta  = sum(beta),
-    fst_gene  = pmax(0, pmin(1, sum(alpha) / sum(beta)))
-  ), by = .(chr, gene_start, gene_end, gene, strand)]
-  
-  # Add back genes with zero SNPs
-  all_genes <- as.data.table(genes)[, .(chr, gene_start, gene_end, gene, strand)]
-  result <- merge(all_genes, result,
-                  by = c("chr", "gene_start", "gene_end", "gene", "strand"),
-                  all.x = TRUE)
-  result[is.na(n_sites), n_sites := 0L]
-  
+    n_sites  = .N,
+    fst_gene = sum(alpha) / sum(beta)
+  ), by = .(chr, gene_start, gene_end, gene, group)]
+  cat("  Genes with FST data:", nrow(result), "\n")
   return(result)
 }
 
-# WE DEFINED A FUNCTION EARLIER, NOW WE WILL SIMPLY LOOP THAT UP FOR ALL THE PAIRS OF THE POPULATIONS. 
-all_results <- list()
-
-for (pair_name in names(fst_files)) {
-  cat("\nProcessing:", pair_name, "\n")
-  res <- compute_gene_fst(fst_files[[pair_name]], copy(genes))
-  res[, comparison := pair_name]
-  all_results[[pair_name]] <- res
-  
-  cat("  Genes with FST data:", sum(!is.na(res$fst_gene)), "\n")
-  cat("  Median gene FST:    ", round(median(res$fst_gene, na.rm = TRUE), 4), "\n")
-  cat("  Top 5 FST genes:\n")
-  print(res[!is.na(fst_gene)][order(-fst_gene)][1:5, .(gene, chr, fst_gene, n_sites)])
-}
-
-all_fst <- rbindlist(all_results)
-
-# SAVING! IMPORTANT ... WHATS THE RESULTS IF YOU HAVENT SAVED THEM :)
-fwrite(all_fst,
-       file.path(OUTDIR, "per_gene_fst_all_pairs.txt"),
-       sep = "\t")
-cat("\nFull table saved to per_gene_fst_all_pairs.txt\n")
-
-# HISTOGRAM OF FST VS DISTRIBUTIONS
-p_hist <- ggplot(all_fst %>% filter(!is.na(fst_gene)),
-                 aes(x = fst_gene, fill = comparison)) +
-  geom_histogram(bins = 60, colour = "white", linewidth = 0.2) +
-  facet_wrap(~ comparison, ncol = 1, scales = "free_y") +
-  scale_fill_manual(values = pair_colours) +
-  labs(x       = "Per-gene FST (Bhatia's correction)",
-       y       = "Number of genes",
-       title   = "Distribution of per-gene FST") +
-  theme_classic(base_size = 13) +
-  theme(legend.position = "none",
-        strip.text      = element_text(face = "bold"),
-        plot.title      = element_text(face = "bold", hjust = 0.5))
-
-ggsave(file.path(OUTDIR, "gene_fst_histogram.pdf"),
-       p_hist, width = 7, height = 9)
-ggsave(file.path(OUTDIR, "gene_fst_histogram.png"),
-       p_hist, width = 7, height = 9, dpi = 300)
-
-# TOP 30 OUTLIERS TO SEE IF WE HAVE ANY PLUMAGE GENES BEING UNCOVERED
-top_genes <- all_fst %>%
-  filter(!is.na(fst_gene), n_sites >= 5) %>%
-  group_by(comparison) %>%
-  slice_max(fst_gene, n = 30) %>%
-  ungroup() %>%
-  mutate(gene = reorder(gene, fst_gene))
-
-p_top <- ggplot(top_genes,
-                aes(x = fst_gene, y = gene, colour = comparison)) +
-  geom_segment(aes(x = 0, xend = fst_gene, yend = gene),
-               linewidth = 0.6, colour = "grey80") +
-  geom_point(size = 3) +
-  facet_wrap(~ comparison, scales = "free_y", ncol = 1) +
-  scale_colour_manual(values = pair_colours) +
-  labs(x       = "Per-gene FST (Bhatia's correction)",
-       y       = NULL,
-       title   = "Top 30 high-FST genes per comparison",
-       caption = "Genes with ≥5 SNPs only") +
-  theme_classic(base_size = 11) +
-  theme(legend.position = "none",
-        strip.text      = element_text(face = "bold"),
-        axis.text.y     = element_text(size = 8),
-        plot.title      = element_text(face = "bold", hjust = 0.5),
-        plot.caption    = element_text(colour = "grey50"))
-
-ggsave(file.path(OUTDIR, "gene_fst_top30_outliers.pdf"),
-       p_top, width = 7, height = 14)
-ggsave(file.path(OUTDIR, "gene_fst_top30_outliers.png"),
-       p_top, width = 7, height = 14, dpi = 300)
-
-# A COMPARISON BETWEEN DIIFERENT POPULATIONS 
-shared_genes <- all_fst %>%
-  filter(!is.na(fst_gene), n_sites >= 5) %>%
-  group_by(gene) %>%
-  filter(n() == 3) %>%
-  ungroup()
-
-p_box <- ggplot(shared_genes,
-                aes(x = comparison, y = fst_gene,
-                    fill = comparison, colour = comparison)) +
-  geom_violin(alpha = 0.3, linewidth = 0.7) +
-  geom_boxplot(width = 0.15, outlier.shape = NA,
-               fill = "white", linewidth = 0.7) +
-  scale_fill_manual(values   = pair_colours) +
-  scale_colour_manual(values = pair_colours) +
-  scale_x_discrete(labels = function(x) str_wrap(x, width = 12)) +
-  labs(x     = NULL,
-       y     = "Per-gene FST (Bhatia's correction)",
-       title = "Per-gene FST across population pairs") +
-  theme_classic(base_size = 13) +
-  theme(legend.position = "none",
-        plot.title      = element_text(face = "bold", hjust = 0.5),
-        axis.title.y    = element_text(face = "bold"))
-
-ggsave(file.path(OUTDIR, "gene_fst_violin_comparison.pdf"),
-       p_box, width = 7, height = 5)
-ggsave(file.path(OUTDIR, "gene_fst_violin_comparison.png"),
-       p_box, width = 7, height = 5, dpi = 300)
-
-# THE MAIN CHUNK, MANHATTAN PLOT WITH TOP 1%TILE GENES LABELLED. 
-# X-axis : scaffolds ordered largest → smallest (approximates chr order)
-# Y-axis : per-gene FST (Bhatia's correction)
-# Colours: alternating light/dark per scaffold (classic Manhattan style)
-# Red    : top 1% FST genes — labelled with gene name via ggrepel
-
-make_manhattan <- function(pair_name, all_fst, dot_colour, outdir) {
-  
-  cat("\nManhattan:", pair_name, "\n")
-  
-  df <- all_fst %>%
-    filter(comparison == pair_name,
-           !is.na(fst_gene),
-           n_sites >= 5) %>%
-    mutate(gene_mid = (gene_start + gene_end) / 2)
-  
-  # Order scaffolds by size (largest first)
+# =========================
+# FUNCTION: BUILD SCAFFOLD OFFSETS FOR X-AXIS
+# =========================
+build_offsets <- function(df) {
   scaffold_order <- df %>%
     group_by(chr) %>%
     summarise(max_pos = max(gene_end), .groups = "drop") %>%
     arrange(desc(max_pos)) %>%
     pull(chr)
-  
-  # Cumulative x-axis positions with 5 Mb gap between scaffolds
-  GAP <- 5e6
+  GAP <- 2e6
   offsets <- setNames(numeric(length(scaffold_order)), scaffold_order)
   cum <- 0
   for (sc in scaffold_order) {
     offsets[sc] <- cum
-    cum <- cum + max(df$gene_end[df$chr == sc], na.rm = TRUE) + GAP
+    cum <- cum + max(df$gene_end[df$chr == sc]) + GAP
+  }
+  return(offsets)
+}
+
+# =========================
+# FUNCTION: MAKE MANHATTAN PLOTS (all genes + top 95%)
+# =========================
+make_manhattan <- function(df, pair_name) {
+  
+  df <- df %>%
+    filter(!is.na(fst_gene), n_sites >= 5) %>%
+    mutate(
+      gene_mid     = (gene_start + gene_end) / 2,
+      is_candidate = gene %in% all_candidates,
+      group        = factor(group, levels = names(group_colours))
+    )
+  
+  if (nrow(df) == 0) { cat("  No data — skipping\n"); return(invisible(NULL)) }
+  
+  fst_95  <- quantile(df$fst_gene, 0.95, na.rm = TRUE)
+  fst_99  <- quantile(df$fst_gene, 0.99, na.rm = TRUE)
+  offsets <- build_offsets(df)
+  df      <- df %>% mutate(x_pos = gene_mid + offsets[chr])
+  
+  scaffold_labels <- df %>%
+    group_by(chr) %>%
+    summarise(x_mid = mean(x_pos), n = n(), .groups = "drop") %>%
+    filter(n >= 3) %>%
+    mutate(chr_label = gsub("JBVOHZ0100+0*", "Sc", chr))
+  
+  # one label per candidate at its highest FST point
+  label_df <- df %>%
+    filter(is_candidate) %>%
+    group_by(gene) %>%
+    slice_max(fst_gene, n = 1) %>%
+    ungroup()
+  
+  # shared theme
+  shared_theme <- list(
+    geom_hline(yintercept = fst_95, linetype = "dashed",
+               colour = "grey50", linewidth = 0.4),
+    geom_hline(yintercept = fst_99, linetype = "solid",
+               colour = "grey20", linewidth = 0.5),
+    scale_colour_manual(
+      values = group_colours, name = "Functional group",
+      guide  = guide_legend(override.aes = list(size = 3.5, alpha = 1), ncol = 2)
+    ),
+    scale_size_manual(values  = group_size,  guide = "none"),
+    scale_alpha_manual(values = group_alpha, guide = "none"),
+    scale_x_continuous(breaks = scaffold_labels$x_mid,
+                       labels = scaffold_labels$chr_label),
+    labs(x = "Scaffolds",
+         y = expression(F[ST]~"(Bhatia et al. 2013)")),
+    theme_classic(base_size = 11),
+    theme(
+      axis.text.x        = element_text(angle = 45, hjust = 1, size = 6),
+      axis.ticks.x       = element_line(linewidth = 0.3),
+      legend.position    = "bottom",
+      legend.text        = element_text(size = 8),
+      legend.title       = element_text(size = 9, face = "bold"),
+      legend.key.size    = unit(0.4, "cm"),
+      plot.title         = element_text(face = "bold", size = 12),
+      plot.subtitle      = element_text(size = 9, colour = "grey40"),
+      panel.grid.major.y = element_line(colour = "grey95", linewidth = 0.3)
+    )
+  )
+  
+  repel_labels <- function(data) {
+    ggrepel::geom_text_repel(
+      data = data, aes(label = gene),
+      colour = "black", size = 2.8, fontface = "bold",
+      max.overlaps = 100, box.padding = 0.5, point.padding = 0.3,
+      segment.color = "grey40", segment.size = 0.3,
+      min.segment.length = 0.1
+    )
   }
   
-  df <- df %>%
-    filter(chr %in% scaffold_order) %>%
-    mutate(
-      x_pos    = gene_mid + offsets[chr],
-      chr      = factor(chr, levels = scaffold_order),
-      scaf_idx = as.integer(factor(chr, levels = scaffold_order))
+  pct_labels <- function(df_plot) {
+    xmax <- max(df_plot$x_pos, na.rm = TRUE) * 0.98
+    list(
+      annotate("text", x = xmax, y = fst_95, label = "95th pct",
+               hjust = 1, vjust = -0.4, size = 2.5, colour = "grey50"),
+      annotate("text", x = xmax, y = fst_99, label = "99th pct",
+               hjust = 1, vjust = -0.4, size = 2.5, colour = "grey20")
     )
+  }
   
-  # Two thresholds — 95th and 99th percentile
-  fst_95 <- quantile(df$fst_gene, 0.95, na.rm = TRUE)
-  fst_99 <- quantile(df$fst_gene, 0.99, na.rm = TRUE)
-  global_fst <- round(mean(df$fst_gene, na.rm = TRUE), 4)
+  # ── ALL GENES ──────────────────────────────────────────────────────────────
+  p_all <- ggplot(df, aes(x = x_pos, y = fst_gene)) +
+    geom_point(data = df %>% filter(!is_candidate),
+               aes(colour = group, size = group, alpha = group)) +
+    geom_point(data = df %>% filter(is_candidate),
+               aes(colour = group, size = group), alpha = 1.0) +
+    repel_labels(label_df) +
+    shared_theme +
+    pct_labels(df) +
+    labs(title    = expression("Genome-wide"~F[ST]~"— all genes"),
+         subtitle = paste0(gsub("_"," ", pair_name),
+                           "  |  Mixornis gularis reference"))
   
-  cat("  95th percentile: FST =", round(fst_95, 4), "\n")
-  cat("  99th percentile: FST =", round(fst_99, 4), "\n")
-  cat("  Global mean FST: ", global_fst, "\n")
-  cat("  Genes above 99th:", sum(df$fst_gene >= fst_99), "\n")
+  ggsave(file.path(OUTDIR, paste0("manhattan_all_", pair_name, ".png")),
+         p_all, width = 20, height = 6, dpi = 300)
+  cat("  Saved: manhattan_all_", pair_name, ".png\n", sep = "")
   
-  df <- df %>%
-    mutate(
-      is_outlier = fst_gene >= fst_99,
-      label      = ifelse(is_outlier, gene, NA_character_)
-    )
+  # ── TOP 95% ONLY ───────────────────────────────────────────────────────────
+  df_top    <- df %>% filter(fst_gene >= fst_95)
+  label_top <- label_df %>% filter(fst_gene >= fst_95)
   
-  # X-axis ticks — midpoint of each major scaffold, trimmed label
-  major_scafs <- df %>% count(chr) %>% filter(n >= 10) %>% pull(chr)
-  scaf_ticks <- df %>%
-    filter(chr %in% major_scafs) %>%
-    group_by(chr) %>%
-    summarise(tick_pos = mean(x_pos), .groups = "drop") %>%
-    mutate(label_txt = as.character(chr) %>%
-             gsub("JBVOHZ010", "", .) %>%
-             gsub("\\.1$", "", .))
+  if (nrow(df_top) > 0) {
+    p_top <- ggplot(df_top, aes(x = x_pos, y = fst_gene)) +
+      geom_point(data = df_top %>% filter(!is_candidate),
+                 aes(colour = group, size = group, alpha = group)) +
+      geom_point(data = df_top %>% filter(is_candidate),
+                 aes(colour = group, size = group), alpha = 1.0) +
+      repel_labels(label_top) +
+      shared_theme +
+      pct_labels(df_top) +
+      labs(title    = expression("Genome-wide"~F[ST]~"— top 95th percentile"),
+           subtitle = paste0(gsub("_"," ", pair_name),
+                             "  |  Mixornis gularis reference"))
+    
+    ggsave(file.path(OUTDIR, paste0("manhattan_top95_", pair_name, ".png")),
+           p_top, width = 20, height = 6, dpi = 300)
+    cat("  Saved: manhattan_top95_", pair_name, ".png\n", sep = "")
+  }
   
-  p <- ggplot(df, aes(x = x_pos, y = fst_gene)) +
-    
-    # 95th percentile — light dashed red
-    geom_hline(yintercept = fst_95,
-               linetype   = "dashed",
-               colour     = "#E63946",
-               linewidth  = 0.55,
-               alpha      = 0.7) +
-    
-    # 99th percentile — solid darker red
-    geom_hline(yintercept = fst_99,
-               linetype   = "solid",
-               colour     = "#9B1B1B",
-               linewidth  = 0.6,
-               alpha      = 0.85) +
-    
-    # All dots — single blue colour, uniform
-    geom_point(colour = dot_colour,
-               size   = 1.0,
-               alpha  = 0.65) +
-    
-    # Gene labels for top 1% — non-overlapping, black text
-    ggrepel::geom_text_repel(
-      aes(label = label),
-      na.rm              = TRUE,
-      size               = 2.4,
-      colour             = "black",
-      fontface           = "plain",
-      box.padding        = 0.3,
-      point.padding      = 0.25,
-      segment.colour     = "grey50",
-      segment.size       = 0.25,
-      segment.alpha      = 0.6,
-      max.overlaps       = 50,
-      min.segment.length = 0.1,
-      direction          = "both",
-      nudge_y            = 0.03
-    ) +
-    
-    scale_colour_identity() +
-    scale_x_continuous(breaks = scaf_ticks$tick_pos,
-                       labels = scaf_ticks$label_txt,
-                       expand = c(0.01, 0)) +
-    scale_y_continuous(expand = expansion(mult = c(0.02, 0.10)),
-                       breaks = c(0, 0.25, 0.50, 0.75, 1.0)) +
-    
-    labs(
-      title    = paste0("Per-gene FST Manhattan plot"),
-      subtitle = paste0("n = ", nrow(df), " genes",
-                        "  |  Global FST = ", global_fst,
-                        "  |  Dashed red = 95th, Darkred = 99th percentile"),
-      x        = "Genomic position (scaffolds)",
-      y        = expression(F[ST])
-    ) +
-    
-    theme_classic(base_size = 12) +
-    theme(
-      plot.title         = element_text(face = "bold", size = 13, hjust = 0),
-      plot.subtitle      = element_text(size = 9, colour = "grey40", hjust = 0),
-      axis.title         = element_text(face = "bold", size = 11),
-      axis.title.y       = element_text(face = "bold.italic"),
-      axis.text.x        = element_text(angle = 0, hjust = 0.5,
-                                        size = 7, colour = "grey50"),
-      axis.text.y        = element_text(size = 10),
-      axis.line          = element_line(colour = "grey30", linewidth = 0.4),
-      axis.ticks         = element_line(colour = "grey50"),
-      panel.grid.major.y = element_line(colour = "grey94", linewidth = 0.3),
-      panel.grid.minor   = element_blank(),
-      plot.caption       = element_text(colour = "grey55", size = 9),
-      plot.margin        = margin(15, 20, 10, 10)
-    )
-  
-  safe_name <- gsub(" vs ", "_vs_", pair_name) %>% gsub(" ", "_", .)
-  ggsave(file.path(outdir, paste0("manhattan_", safe_name, ".pdf")),
-         p, width = 16, height = 5)
-  ggsave(file.path(outdir, paste0("manhattan_", safe_name, ".png")),
-         p, width = 16, height = 5, dpi = 300)
-  cat("  Saved: manhattan_", safe_name, ".pdf/png\n", sep = "")
-  
-  # Return outlier table for this pair
-  df %>%
-    filter(is_outlier) %>%
-    select(gene, chr, gene_start, gene_end, fst_gene, n_sites) %>%
+  # ── SAVE TABLE ─────────────────────────────────────────────────────────────
+  top_tbl <- df_top %>%
     arrange(desc(fst_gene)) %>%
-    mutate(comparison = pair_name)
+    mutate(
+      percentile   = ifelse(fst_gene >= fst_99, "top1pct", "top5pct"),
+      is_candidate = gene %in% all_candidates
+    ) %>%
+    select(chr, gene_start, gene_end, gene, group,
+           n_sites, fst_gene, percentile, is_candidate)
+  
+  write.table(top_tbl,
+              file = file.path(OUTDIR, paste0("top_genes_", pair_name, ".tsv")),
+              sep = "\t", quote = FALSE, row.names = FALSE)
+  
+  cat("  Top genes:", nrow(top_tbl),
+      "| candidates in top 95%:", sum(top_tbl$is_candidate), "\n")
 }
 
-# SO WE DEFINED A FUNCTION EARLIER TO PLOT THESE PLOTS... NOW LOOP IT UP FOR ALL THE PAIRS OF THE POPULATIONS
-cat("\n======================================\n")
-cat("Generating Manhattan plots...\n")
-
-all_outliers <- list()
-for (pair_name in names(fst_files)) {
-  all_outliers[[pair_name]] <- make_manhattan(
-    pair_name  = pair_name,
-    all_fst    = all_fst,
-    dot_colour = pair_colours[[pair_name]],
-    outdir     = OUTDIR
-  )
+# =========================
+# RUN ALL THREE PAIRS
+# =========================
+for (pair in names(fst_files)) {
+  cat("\n==============================\n")
+  cat("Processing:", pair, "\n")
+  cat("==============================\n")
+  fst_dt <- read_fst(fst_files[[pair]])
+  res    <- compute_gene_fst(fst_dt, genes)
+  make_manhattan(res, pair)
 }
 
-# Save top 1% outlier gene table
-outlier_table <- bind_rows(all_outliers)
-fwrite(outlier_table,
-       file.path(OUTDIR, "top1pct_outlier_genes.txt"),
-       sep = "\t")
-cat("\nOutlier gene table saved to top1pct_outlier_genes.txt\n")
-
-cat("\n======================================\n")
-cat("All outputs saved to:", OUTDIR, "\n")
-cat("Files produced:\n")
-cat("  per_gene_fst_all_pairs.txt\n")
-cat("  top1pct_outlier_genes.txt\n")
-cat("  gene_fst_histogram.pdf/png\n")
-cat("  gene_fst_top30_outliers.pdf/png\n")
-cat("  gene_fst_violin_comparison.pdf/png\n")
-cat("  manhattan_hyperythra_vs_albogularis.pdf/png\n")
-cat("  manhattan_hyperythra_vs_abuensis.pdf/png\n")
-cat("  manhattan_albogularis_vs_abuensis.pdf/png\n")
-cat("======================================\n")
-
-
-######################################################################################################################################################
-#we are done 
-######################################################################################################################################################
+cat("\nDone! Output:", OUTDIR, "\n")
